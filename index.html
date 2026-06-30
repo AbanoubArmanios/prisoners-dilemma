@@ -584,27 +584,39 @@ const Player={
   join(code,name,avatar,silent){
     if(!code||code.length<4){$('join-msg').textContent='Enter the 4-letter room code.';return;}
     if(!name){$('join-msg').textContent='Enter a team name.';return;}
-    this.code=code; this.name=name; this.avatar=avatar; this._left=false;
+    this.code=code; this.name=name; this.avatar=avatar; this._left=false; this._firstMsg=!silent;
     if(!silent)$('join-msg').textContent='Connecting…';
-    try{if(this.peer)this.peer.destroy();}catch(e){}
-    this.peer=new Peer({config:{iceServers:ICE}});
-    this.peer.on('open',()=>{
-      this.conn=this.peer.connect(PREFIX+code,{reliable:true});
-      this.conn.on('open',()=>{ this._rc=false; this.conn.send({t:'hello',name,avatar}); show('player');
-        $('p-name').textContent=name; $('p-avatar').textContent=avatar; lsSet('pd_player',{code,name,avatar}); setURL({room:code});
-        $('p-play').classList.add('hidden'); $('p-finished').classList.add('hidden'); $('p-lobby').classList.remove('hidden'); });
-      this.conn.on('data',d=>this.onData(d));
-      this.conn.on('close',()=>{ if(!this._left)this._reconnect(); });
-      this.conn.on('error',e=>{ if(!silent)$('join-msg').textContent='Could not connect: '+e; });
-    });
-    this.peer.on('disconnected',()=>{try{this.peer.reconnect();}catch(e){}});
-    this.peer.on('error',e=>{ if(e.type==='peer-unavailable'){ if(!silent)$('join-msg').textContent='Waiting for host…'; this._reconnect(); } else if(!silent){$('join-msg').textContent='Network error: '+e.type;} });
+    this._connect(); this._watchdog();
   },
-  _reconnect(){ if(this._rc||this._left||!this.code)return; this._rc=true; $('statusbar').classList.remove('hidden'); $('statusbar').textContent='⟳ Reconnecting…';
-    setTimeout(()=>{ this._rc=false; this.join(this.code,this.name,this.avatar,true); },1600); },
-  autoRejoin(pp){ show('player'); $('p-lobby').classList.remove('hidden'); $('p-play').classList.add('hidden'); $('p-finished').classList.add('hidden');
-    $('p-name').textContent=pp.name; $('p-avatar').textContent=pp.avatar; toast('Reconnecting to '+pp.code+'…'); this.join(pp.code,pp.name,pp.avatar,true); },
+  autoRejoin(pp){ this.code=pp.code; this.name=pp.name; this.avatar=pp.avatar; this._left=false; this._firstMsg=false; show('player');
+    $('p-name').textContent=pp.name; $('p-avatar').textContent=pp.avatar; $('p-play').classList.add('hidden'); $('p-finished').classList.add('hidden'); $('p-lobby').classList.remove('hidden');
+    $('statusbar').classList.remove('hidden'); $('statusbar').textContent='⟳ Reconnecting…'; this._connect(); this._watchdog(); },
   rejoinSaved(){ const p=lsGet('pd_player'); if(p)this.autoRejoin(p); },
+  leave(){ this._left=true; if(this._wd){clearInterval(this._wd);this._wd=null;} try{if(this.peer)this.peer.destroy();}catch(e){} lsDel('pd_player'); },
+  _watchdog(){ if(this._wd)return; this._wd=setInterval(()=>{
+      if(this._left){clearInterval(this._wd);this._wd=null;return;}
+      if(this.conn&&this.conn.open)return; if(this._connecting)return;
+      $('statusbar').classList.remove('hidden'); $('statusbar').textContent='⟳ Reconnecting…'; this._connect();
+    }, 2500); },
+  _connect(){
+    if(this._connecting||this._left)return; this._connecting=true;
+    try{if(this.peer)this.peer.destroy();}catch(e){}
+    const peer=new Peer({config:{iceServers:ICE}}); this.peer=peer; let opened=false;
+    const giveup=()=>{ this._connecting=false; };
+    peer.on('open',()=>{
+      if(this._left){try{peer.destroy();}catch(e){}return;}
+      const conn=peer.connect(PREFIX+this.code,{reliable:true}); this.conn=conn;
+      conn.on('open',()=>{ opened=true; this._connecting=false; conn.send({t:'hello',name:this.name,avatar:this.avatar}); show('player');
+        $('p-name').textContent=this.name; $('p-avatar').textContent=this.avatar; lsSet('pd_player',{code:this.code,name:this.name,avatar:this.avatar}); setURL({room:this.code});
+        if($('p-play').classList.contains('hidden')&&$('p-finished').classList.contains('hidden'))$('p-lobby').classList.remove('hidden'); });
+      conn.on('data',d=>this.onData(d));
+      conn.on('close',()=>{ giveup(); if(!this._left){$('statusbar').classList.remove('hidden');$('statusbar').textContent='⟳ Reconnecting…';} });
+      conn.on('error',()=>giveup());
+      setTimeout(()=>{ if(!opened){ try{peer.destroy();}catch(e){} giveup(); } },4500);
+    });
+    peer.on('disconnected',()=>{try{peer.reconnect();}catch(e){}});
+    peer.on('error',e=>{ if(this._firstMsg&&e.type==='peer-unavailable')$('join-msg').textContent='Waiting for host…'; else if(this._firstMsg)$('join-msg').textContent='Network error: '+e.type; giveup(); });
+  },
   setAvatar(a){if(this.conn)this.conn.send({t:'avatar',avatar:a});},
   renderPicker(taken,mine){ const g=$('p-avpick'); if(!g)return;
     g.innerHTML=AVATARS.map(a=>{const locked=taken.includes(a)&&a!==mine;
